@@ -14,7 +14,28 @@
 
 基于这个现象，FaceBook的人就开始想了，如果客户端能够在服务器生成页面的时候同时能够进行资源的下载和页面的解析，在页面进行资源下载和解析的过程服务器端也能够继续生成页面，那么整体的性能将会得到很大的提升。于是，Bigpipe就诞生了。
 
-## Bigpipe的交互模式
+## 什么是Bigpipe？
+- 存在很久的一种分块加载技术
+- Facebook首创
+- 首屏快速加载的的异步加载页面方案
+- 前端性能优化的一个方向
+- 适合比较大型的，需要大量服务器运算的站点
+- 有效减少HTTP请求
+- 兼容多浏览器
+
+与传统Ajax比较
+- 减少HTTP请求数：多个模块更新合成一个请求
+- 请求数减少：多个chunk合成一个请求
+- 减少开发成本：前端无需多写JavaScript代码
+- 降低管理成本：模块更新由后端程序控制
+- URL优雅降级：页面链接使用真实地址
+- 代码一致性：页面加载不劢态刷新模块代码相同
+
+解决的问题
+- 下载阻塞
+- 服务器和浏览器资源浪费问题
+
+### Bigpipe的交互模式
 为了让一个页面能够同时被客户端和服务前端处理，首先我们需要将一个完整的页面划分成若干个小块，这些小块bigpipe将其称作pagelets。然后通过Bigpipe技术，让页面以pagelet的形式在服务前端生成并分块发送给客户端。
 Bigpipe让页面的生成步骤拆成以下几个步骤：
 
@@ -69,12 +90,21 @@ big_pipe.onPageletArrive({id: “pagelet_composer”, content=<HTML>, css=[..], 
 经过上面的对比，我们可以看到Bigpipe在性能上做了加到的改进，效果达到了质的飞跃。
 ]
 
-### 怎么实现服务前端准备就绪一个pagelet模块,客户端就能够收到响应进行渲染显示一个pagelet呢？
+### 怎么实现服务前端准备就绪一个pagelet模块,客户端就能够收到响应进行渲染显示一个pagelet呢？—— 关键的技术点
 首先服务前端准备好一个pagelet后，就会通过res.write()响应给客户端。
 而现在几乎所有的主流浏览器都支持HTTP 1.1版本，而HTTP 1.1版本的Tranfer-Encoding  chunked  特性支持一个模块一个模块的接收并渲染。当服务前端所有pagelet生成完毕后，向客户端响应res.end()就可以结束一个请求的响应。
 
+HTTP 1.1 引入分块传输编码
+> 注：HTTP分块传输编码允许服务器为动态生成的内容维持HTTP持久链接。
+
+HTTP分块传输编码格式
+> Transfer-Encoding: chunked 如果一个HTTP消息（请求消息或应答消息）的Transfer-Encoding消息头的值为chunked，那么，消息体由数量未定的块组成，并以最后一个大小为0的块为结束。
+
+Nodejs自动开启 chunked encoding
+> 除非通过sendHeader()设置Content-Length头。
+
 ## Bigview是什么？
-Bigview是使用Node.js和Bigpipe技术构建的框架。
+Bigview是使用Node.js、Promise（bluebird）和 Bigpipe技术构建的框架。
 
 ### 组件
 - bigview(Node.js)视图基类 
@@ -98,3 +128,168 @@ big_pipe.onPageletArrive({id: “pagelet_composer”, content=<HTML>, css=[..], 
 
 ![...](/images/responseProcess.jpg)
 浏览器端发出请求，服务器端响应 res ,  首先向浏览器端返回布局，浏览器端接收后进行首屏渲染，与此同时服务器端还在准备模块1、模块2....模块n，一个模块准备就绪就给浏览器端吐。直到 所有模块准备好并向浏览器端写入了，服务器端调res.end()浏览器接到该信息后domComplete，接着进入domReady 状态。
+
+### 生命周期
+
+#### bigview的生命周期
+
+- before
+    - then(this.beforeRenderLayout.bind(this))
+    - then(this.renderLayout.bind(this))
+    - then(this.afterRenderLayout.bind(this))
+    - then(this.beforeRenderPagelets.bind(this))
+    - then(this.renderPagelets.bind(this))
+    - then(this.afterRenderPagelets.bind(this)
+- end
+
+#### bigview的生命周期精简
+
+- before
+- renderLayout
+- renderPagelets
+- end
+
+#### biglet的生命周期
+
+- before
+    - then(self.fetch.bind(self))
+    - then(self.parse.bind(self))
+    - then(self.render.bind(self))
+- end
+
+### Node.js bigpipe实现
+
+#### 使用内置的http模块
+
+``` js
+'use strict'
+
+var http = require('http')
+
+const sleep = ms => new Promise(r => setTimeout(r, ms))
+
+var app = http.createServer((req, res) => {
+  res.writeHead(200, { 'Content-Type': 'text/html', 'charset': 'utf-8' })
+  
+  res.write('loading...<br>')
+  
+  return sleep(2000).then(function() {
+    res.write(`timer: 2000ms<br>`)
+    return sleep(5000)
+  })
+  .then(function() {
+    res.write(`timer: 5000ms<br>`)
+  }).then(function() {
+    res.end()
+  })
+})
+
+app.listen(3000)
+```
+
+#### Express写法
+
+``` js
+'use strict'
+
+const sleep = ms => new Promise(r => setTimeout(r, ms))
+
+var express = require('express')
+var app = express()
+
+app.get('/', function (req, res) {
+  res.type('html');   
+  res.write('loading...<br>')
+  
+  return sleep(2000).then(function() {
+    res.write(`timer: 2000ms<br>`)
+    return sleep(5000)
+  })
+  .then(function() {
+    res.write(`timer: 5000ms<br>`)
+  }).then(function() {
+    res.end()
+  })
+})
+
+app.listen(3000)
+``` 
+#### Koa 1.x
+
+``` js
+var koa = require('koa')
+var app = koa()
+var co = require('co')
+const Readable = require('stream').Readable
+
+const sleep = ms => new Promise(r => setTimeout(r, ms))
+
+app.use(function* () {
+  const view = new Readable()
+  view._read = () => { }
+
+  this.body = view
+  this.type = 'html'
+  this.status = 200
+
+  view.push('loading...<br>')
+
+  co(function* () {
+      yield sleep(2000)
+      view.push(`timer: 2000ms<br>`)
+      yield sleep(5000)
+      view.push(`timer: 5000ms<br>`)
+
+      /** 结束传送 */
+      view.push(null)
+  }).catch(e => { })
+})
+
+app.listen(9092)
+```
+
+#### Koa 2.x
+
+``` js
+const Koa = require('koa')
+const app = new Koa()
+
+const sleep = ms => new Promise(r => setTimeout(r, ms))
+
+app.use(require('koa-bigpipe'))
+
+// response
+app.use(ctx => {
+  // ctx.body = 'Hello Koa'
+  ctx.write('loading...<br>')
+  
+  return sleep(2000).then(function(){
+    ctx.write(`timer: 2000ms<br>`)
+    return sleep(5000)
+  }).then(function(){
+    ctx.write(`timer: 5000ms<br>`)
+  }).then(function(){
+    ctx.end()
+  })
+})
+
+app.listen(3000)
+```
+
+#### 关键字
+
+    res.write('xxxx');
+    res.write('xxxx');
+    res.write('xxxx');
+    res.end('xxxx');
+
+#### 为什么不用res.send?
+
+    因为res.send包括了res.write()和res.end()
+
+#### 为什么是按照顺序加载的,怎么能并发加载呢?
+    这就需要用到promise了, 自行领悟
+
+### Bigview & Biglet 关系
+
+![](/images/bigview&biglet.jpg)
